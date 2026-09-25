@@ -39,6 +39,7 @@ class StoredReview {
     required this.passCount,
     required this.failCount,
     required this.noteCount,
+    this.hasAiReview = false,
   });
 
   final ReviewVersion version;
@@ -48,4 +49,7 @@ class StoredReview {
   final int passCount;
   final int failCount;
   final int noteCount;
+
+  /// True when this version has a saved AI document check.
+  final bool hasAiReview;
 }

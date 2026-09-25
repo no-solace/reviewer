@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
@@ -20,6 +22,7 @@ class DocumentView extends StatefulWidget {
     required this.reviews,
     required this.loadContent,
     required this.onSectionFocused,
+    this.scrollRequest,
   });
 
   final List<DocumentSection> sections;
@@ -27,6 +30,9 @@ class DocumentView extends StatefulWidget {
   final Map<String, SectionReview> reviews;
   final Future<SectionContent> Function(DocumentSection section) loadContent;
   final ValueChanged<DocumentSection> onSectionFocused;
+
+  /// Set to a section id to jump there without rebuilding this view.
+  final ValueNotifier<String?>? scrollRequest;
 
   @override
   State<DocumentView> createState() => _DocumentViewState();
@@ -44,17 +50,26 @@ class _DocumentViewState extends State<DocumentView> {
   double _zoom = 1;
   String? _reportedId;
   bool _programmaticScroll = false;
-  bool _focusQueued = false;
+  Timer? _focusTimer;
+  DocumentSection? _pendingFocus;
+  late final ValueNotifier<String?> _highlight;
 
   @override
   void initState() {
     super.initState();
+    _highlight = ValueNotifier(widget.selectedId);
+    _reportedId = widget.selectedId;
+    widget.scrollRequest?.addListener(_onScrollRequest);
     _itemPositionsListener.itemPositions.addListener(_onPositions);
   }
 
   @override
   void didUpdateWidget(covariant DocumentView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.scrollRequest != oldWidget.scrollRequest) {
+      oldWidget.scrollRequest?.removeListener(_onScrollRequest);
+      widget.scrollRequest?.addListener(_onScrollRequest);
+    }
     final id = widget.selectedId;
     if (id != null && id != oldWidget.selectedId && id != _reportedId) {
       _scrollTo(id);
@@ -63,16 +78,25 @@ class _DocumentViewState extends State<DocumentView> {
 
   @override
   void dispose() {
+    _focusTimer?.cancel();
+    widget.scrollRequest?.removeListener(_onScrollRequest);
     _itemPositionsListener.itemPositions.removeListener(_onPositions);
     _horizontalController.dispose();
+    _highlight.dispose();
     super.dispose();
   }
 
+  void _onScrollRequest() {
+    final id = widget.scrollRequest?.value;
+    if (id == null) return;
+    _scrollTo(id);
+  }
+
   void _onPositions() {
-    if (_programmaticScroll || _focusQueued || widget.sections.isEmpty) return;
+    if (_programmaticScroll || widget.sections.isEmpty) return;
     final positions = _itemPositionsListener.itemPositions.value;
     final visible = positions.where(
-      (position) => position.itemTrailingEdge > 0.02 && position.itemLeadingEdge < 0.98,
+      (position) => position.itemTrailingEdge > 0.12 && position.itemLeadingEdge < 0.85,
     );
     if (visible.isEmpty) return;
 
@@ -84,26 +108,33 @@ class _DocumentViewState extends State<DocumentView> {
     if (section.id == _reportedId) return;
 
     _reportedId = section.id;
-    _focusQueued = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _focusQueued = false;
-      if (!mounted || _reportedId != section.id) return;
-      widget.onSectionFocused(section);
+    _highlight.value = section.id;
+    _pendingFocus = section;
+    _focusTimer?.cancel();
+    _focusTimer = Timer(const Duration(milliseconds: 120), () {
+      final pending = _pendingFocus;
+      if (!mounted || pending == null || pending.id != _reportedId) return;
+      widget.onSectionFocused(pending);
     });
   }
 
-  void _scrollTo(String id) {
+  void _scrollTo(String id, {bool retry = true}) {
     final index = widget.sections.indexWhere((section) => section.id == id);
     if (index < 0) return;
     _reportedId = id;
+    _highlight.value = id;
+    if (!_itemScrollController.isAttached) {
+      if (!retry) return;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _scrollTo(id, retry: false);
+      });
+      return;
+    }
     _programmaticScroll = true;
-    _itemScrollController
-        .scrollTo(
-          index: index,
-          duration: const Duration(milliseconds: 280),
-          curve: Curves.easeOutCubic,
-        )
-        .whenComplete(() => _programmaticScroll = false);
+    _itemScrollController.jumpTo(index: index);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _programmaticScroll = false;
+    });
   }
 
   void _setZoom(double zoom) {
@@ -137,21 +168,26 @@ class _DocumentViewState extends State<DocumentView> {
                     itemScrollController: _itemScrollController,
                     itemPositionsListener: _itemPositionsListener,
                     itemCount: widget.sections.length,
+                    minCacheExtent: 4000.0,
+                    physics: const ClampingScrollPhysics(),
                     padding: const EdgeInsets.symmetric(vertical: 28),
                     itemBuilder: (context, index) {
                       final section = widget.sections[index];
-                      return _SectionBlock(
-                        section: section,
-                        selected: section.id == widget.selectedId,
-                        review: widget.reviews[section.id] ?? const SectionReview(),
-                        zoom: _zoom,
-                        pageWidth: pageWidth,
-                        contentWidth: pageWidth - 72,
-                        contentFuture: widget.loadContent(section),
-                        onSelect: () {
-                          _reportedId = section.id;
-                          widget.onSectionFocused(section);
-                        },
+                      return RepaintBoundary(
+                        child: _SectionBlock(
+                          section: section,
+                          highlight: _highlight,
+                          review: widget.reviews[section.id] ?? const SectionReview(),
+                          zoom: _zoom,
+                          pageWidth: pageWidth,
+                          contentWidth: pageWidth - 72,
+                          contentFuture: widget.loadContent(section),
+                          onSelect: () {
+                            _reportedId = section.id;
+                            _highlight.value = section.id;
+                            widget.onSectionFocused(section);
+                          },
+                        ),
                       );
                     },
                   ),
@@ -239,7 +275,7 @@ class _ZoomBar extends StatelessWidget {
 class _SectionBlock extends StatelessWidget {
   const _SectionBlock({
     required this.section,
-    required this.selected,
+    required this.highlight,
     required this.review,
     required this.zoom,
     required this.pageWidth,
@@ -249,7 +285,7 @@ class _SectionBlock extends StatelessWidget {
   });
 
   final DocumentSection section;
-  final bool selected;
+  final ValueListenable<String?> highlight;
   final SectionReview review;
   final double zoom;
   final double pageWidth;
@@ -266,84 +302,94 @@ class _SectionBlock extends StatelessWidget {
       _ => 16.0,
     };
 
-    final document = DecoratedBox(
-      decoration: BoxDecoration(
-        color: selected ? const Color(0xFFE8F1FA) : Colors.white,
-        border: Border(
-          left: BorderSide(
-            color: selected ? const Color(0xFF2E75B6) : Colors.transparent,
-            width: 4,
-          ),
-        ),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(32, 16, 36, 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.only(top: 4, right: 8),
-                  child: Icon(review.status.icon, size: 16, color: review.status.color),
-                ),
-                Expanded(
-                  child: Text(
-                    section.title,
-                    style: TextStyle(
-                      fontFamily: 'Calibri',
-                      fontSize: headingSize * zoom,
-                      fontWeight: FontWeight.w700,
-                      height: 1.25,
-                      color: const Color(0xFF2E75B6),
-                    ),
+    final content = Padding(
+      padding: const EdgeInsets.fromLTRB(32, 16, 36, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 4, right: 8),
+                child: Icon(review.status.icon, size: 16, color: review.status.color),
+              ),
+              Expanded(
+                child: Text(
+                  section.title,
+                  style: TextStyle(
+                    fontFamily: 'Calibri',
+                    fontSize: headingSize * zoom,
+                    fontWeight: FontWeight.w700,
+                    height: 1.25,
+                    color: const Color(0xFF2E75B6),
                   ),
                 ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            FutureBuilder<SectionContent>(
-                future: contentFuture,
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState != ConnectionState.done) {
-                    return const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 8),
-                      child: LinearProgressIndicator(minHeight: 2),
-                    );
-                  }
-                  if (snapshot.hasError) {
-                    return Text('Không tải được nội dung: ${snapshot.error}');
-                  }
-                  final pieces = snapshot.data?.pieces ?? const <ContentPiece>[];
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      for (final piece in pieces) ...[
-                        _PieceView(piece: piece, zoom: zoom, contentWidth: contentWidth),
-                        const SizedBox(height: 10),
-                      ],
-                    ],
-                  );
-                },
               ),
             ],
           ),
-        ),
-      );
+          const SizedBox(height: 8),
+          FutureBuilder<SectionContent>(
+            future: contentFuture,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState != ConnectionState.done) {
+                return const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: LinearProgressIndicator(minHeight: 2),
+                );
+              }
+              if (snapshot.hasError) {
+                return Text('Không tải được nội dung: ${snapshot.error}');
+              }
+              final pieces = snapshot.data?.pieces ?? const <ContentPiece>[];
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final piece in pieces) ...[
+                    _PieceView(piece: piece, zoom: zoom, contentWidth: contentWidth),
+                    const SizedBox(height: 10),
+                  ],
+                ],
+              );
+            },
+          ),
+        ],
+      ),
+    );
 
     return GestureDetector(
       onTap: onSelect,
       behavior: HitTestBehavior.translucent,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(width: pageWidth, child: document),
-          SizedBox(
-            width: _DocumentViewState._noteGutter,
-            child: _MarginNote(review: review, selected: selected),
-          ),
-        ],
+      child: ValueListenableBuilder<String?>(
+        valueListenable: highlight,
+        child: content,
+        builder: (context, selectedId, content) {
+          final selected = selectedId == section.id;
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: pageWidth,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: selected ? const Color(0xFFE8F1FA) : Colors.white,
+                    border: Border(
+                      left: BorderSide(
+                        color: selected ? const Color(0xFF2E75B6) : Colors.transparent,
+                        width: 4,
+                      ),
+                    ),
+                  ),
+                  child: content,
+                ),
+              ),
+              SizedBox(
+                width: _DocumentViewState._noteGutter,
+                child: _MarginNote(review: review, selected: selected),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -518,6 +564,7 @@ class _DocumentImage extends StatelessWidget {
             image.bytes!,
             width: displayWidth,
             fit: BoxFit.contain,
+            gaplessPlayback: true,
             cacheWidth: cacheWidth,
           )
         : RawImage(image: image.uiImage, width: displayWidth, fit: BoxFit.contain);

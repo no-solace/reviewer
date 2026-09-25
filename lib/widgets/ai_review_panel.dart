@@ -3,13 +3,17 @@ import 'package:flutter/material.dart';
 import '../models/ai_settings.dart';
 import '../models/document_ai_review.dart';
 import '../models/document_section.dart';
+import '../models/review_version.dart';
+import '../models/section_review.dart';
 import '../models/structure_template.dart';
 import '../services/ai_review_store.dart';
 import '../services/ai_settings_store.dart';
 import '../services/document_ai_reviewer.dart';
 import '../services/llm/llm_client.dart';
+import '../services/review_store.dart';
 import '../services/section_content_loader.dart';
 import 'ai_settings_dialog.dart';
+import 'review_status.dart';
 
 /// Side panel that runs a whole-document AI check and lists its findings.
 /// Keep it mounted while hidden (e.g. `Visibility(maintainState: true)`)
@@ -17,18 +21,34 @@ import 'ai_settings_dialog.dart';
 class AiReviewPanel extends StatefulWidget {
   const AiReviewPanel({
     super.key,
+    required this.version,
+    required this.store,
     required this.filePath,
     required this.sections,
     required this.contentLoader,
     required this.template,
+    required this.focusedSectionId,
     required this.onSectionTap,
     required this.onAddToNote,
+    required this.onReviewReady,
     required this.onClose,
+    this.onReviewLoaded,
+    this.readOnly = false,
   });
 
+  final ReviewVersion version;
+  final ReviewStore store;
   final String filePath;
   final List<DocumentSection> sections;
   final SectionContentLoader contentLoader;
+  final String? focusedSectionId;
+  final bool readOnly;
+
+  /// Called after a finished check is saved on this review version.
+  final ValueChanged<DocumentAiReview> onReviewReady;
+
+  /// Called when a previously saved check is found for this version.
+  final VoidCallback? onReviewLoaded;
 
   /// The structure template chosen on the home page, or null for none.
   final StructureTemplate? template;
@@ -43,9 +63,10 @@ class AiReviewPanel extends StatefulWidget {
 }
 
 class _AiReviewPanelState extends State<AiReviewPanel> {
-  final AiReviewStore _reviewStore = AiReviewStore();
+  final AiReviewStore _legacyStore = AiReviewStore();
   final AiSettingsStore _settingsStore = AiSettingsStore();
   final TextEditingController _instructionsController = TextEditingController();
+  final ScrollController _resultsScroll = ScrollController();
 
   late final Map<String, DocumentSection> _sectionsById = {
     for (final section in _flatten(widget.sections)) section.id: section,
@@ -56,15 +77,34 @@ class _AiReviewPanelState extends State<AiReviewPanel> {
   DocumentAiReviewer? _runningReviewer;
   String _status = '';
   String? _error;
+  bool _showAll = false;
 
   @override
   void initState() {
     super.initState();
-    _reviewStore.load(widget.filePath).then((review) {
-      if (!mounted || review == null) return;
-      setState(() => _review = review);
-    });
+    _loadSaved();
     _reloadSettings();
+  }
+
+  @override
+  void didUpdateWidget(covariant AiReviewPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.focusedSectionId != widget.focusedSectionId && !_showAll && _resultsScroll.hasClients) {
+      _resultsScroll.jumpTo(0);
+    }
+  }
+
+  Future<void> _loadSaved() async {
+    final saved = await widget.store.loadAiReview(widget.version);
+    final review = saved ?? await _legacyStore.load(widget.filePath);
+    if (!mounted || review == null) return;
+    setState(() => _review = review);
+    if (saved == null && !widget.readOnly) {
+      await widget.store.saveAiReview(widget.version, review);
+    }
+    if (review.sectionGrades.isNotEmpty || review.issues.isNotEmpty) {
+      widget.onReviewLoaded?.call();
+    }
   }
 
   Future<AiSettings> _reloadSettings() async {
@@ -81,6 +121,7 @@ class _AiReviewPanelState extends State<AiReviewPanel> {
   void dispose() {
     _runningReviewer?.cancel();
     _instructionsController.dispose();
+    _resultsScroll.dispose();
     super.dispose();
   }
 
@@ -117,8 +158,9 @@ class _AiReviewPanelState extends State<AiReviewPanel> {
           if (mounted) setState(() => _status = status);
         },
       );
-      await _reviewStore.save(widget.filePath, review);
+      await widget.store.saveAiReview(widget.version, review);
       if (mounted) setState(() => _review = review);
+      widget.onReviewReady(review);
     } on LlmException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } catch (e) {
@@ -156,6 +198,7 @@ class _AiReviewPanelState extends State<AiReviewPanel> {
         const Divider(height: 1),
         Expanded(
           child: ListView(
+            controller: _resultsScroll,
             padding: const EdgeInsets.all(16),
             children: [
               if (_settings != null)
@@ -190,7 +233,7 @@ class _AiReviewPanelState extends State<AiReviewPanel> {
                     label: const Text('Huỷ'),
                   ),
                 ),
-              ] else
+              ] else if (!widget.readOnly)
                 FilledButton.icon(
                   onPressed: _run,
                   icon: const Icon(Icons.play_arrow),
@@ -203,9 +246,9 @@ class _AiReviewPanelState extends State<AiReviewPanel> {
               if (review == null && !running && _error == null) ...[
                 const SizedBox(height: 16),
                 Text(
-                  'AI sẽ đọc toàn bộ tài liệu (cả hình/sơ đồ) và chỉ ra: mục còn thiếu so với mẫu cấu trúc, '
-                  'mâu thuẫn giữa các phần, yêu cầu mơ hồ hoặc không kiểm thử được. '
-                  'Kết quả chỉ là gợi ý — giảng viên vẫn là người chấm.',
+                  'AI đọc toàn bộ tài liệu rồi chấm Đạt hoặc Chưa đạt cho từng mục, '
+                  'ghi chú từng vấn đề vào đúng mục, và lưu kết quả cùng bản review này. '
+                  'Khi lướt tài liệu, bảng này hiện đánh giá của mục đang xem.',
                   style: theme.textTheme.bodyMedium,
                 ),
               ],
@@ -224,14 +267,61 @@ class _AiReviewPanelState extends State<AiReviewPanel> {
     final date =
         '${created.day.toString().padLeft(2, '0')}/${created.month.toString().padLeft(2, '0')}/${created.year} '
         '${created.hour.toString().padLeft(2, '0')}:${created.minute.toString().padLeft(2, '0')}';
+    final passCount = review.sectionGrades.where((grade) => grade.status == AiGradeStatus.pass).length;
+    final failCount = review.sectionGrades.where((grade) => grade.status == AiGradeStatus.fail).length;
+    final focused = _sectionsById[widget.focusedSectionId];
+    final focusedGrade = review.sectionGrades.where((grade) => grade.sectionId == widget.focusedSectionId).firstOrNull;
+    final focusedIssues = [
+      for (final issue in issues)
+        if (issue.sectionId != null && issue.sectionId == widget.focusedSectionId) issue,
+    ];
 
-    return [
+    final header = <Widget>[
       const SizedBox(height: 16),
       Text(
         'Kết quả lúc $date · ${review.model}'
         '${review.templateName == null ? '' : ' · mẫu "${review.templateName}"'}',
         style: theme.textTheme.bodySmall,
       ),
+      if (review.sectionGrades.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        Text('$passCount đạt · $failCount chưa đạt', style: theme.textTheme.titleSmall),
+      ],
+    ];
+
+    if (!_showAll && focused != null) {
+      return [
+        ...header,
+        _Heading('Đánh giá mục đang xem'),
+        Text(focused.title, style: theme.textTheme.titleSmall),
+        const SizedBox(height: 8),
+        if (focusedGrade == null)
+          const Text('Mục này chưa có Đạt/Chưa đạt. Chạy lại để chấm toàn bộ tài liệu.')
+        else ...[
+          _GradeBanner(grade: focusedGrade),
+          if (focusedGrade.note.trim().isNotEmpty) ...[
+            const SizedBox(height: 8),
+            SelectableText(focusedGrade.note),
+          ],
+        ],
+        _Heading('Vấn đề của mục (${focusedIssues.length})'),
+        if (focusedIssues.isEmpty) const Text('Không có vấn đề nào gắn với mục này.'),
+        for (final issue in focusedIssues)
+          _IssueCard(
+            issue: issue,
+            section: focused,
+            onSectionTap: widget.onSectionTap,
+            onAddToNote: widget.readOnly ? null : widget.onAddToNote,
+          ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton(onPressed: () => setState(() => _showAll = true), child: const Text('Xem toàn bộ kết quả')),
+        ),
+      ];
+    }
+
+    return [
+      ...header,
       const SizedBox(height: 12),
       _Heading('Nhận xét tổng quan'),
       SelectableText(review.overallAssessment),
@@ -251,7 +341,15 @@ class _AiReviewPanelState extends State<AiReviewPanel> {
           issue: issue,
           section: _sectionsById[issue.sectionId],
           onSectionTap: widget.onSectionTap,
-          onAddToNote: widget.onAddToNote,
+          onAddToNote: widget.readOnly ? null : widget.onAddToNote,
+        ),
+      if (focused != null)
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton(
+            onPressed: () => setState(() => _showAll = false),
+            child: const Text('Theo mục đang xem'),
+          ),
         ),
     ];
   }
@@ -260,6 +358,24 @@ class _AiReviewPanelState extends State<AiReviewPanel> {
     return [
       for (final section in sections) ...[section, ..._flatten(section.children)],
     ];
+  }
+}
+
+class _GradeBanner extends StatelessWidget {
+  const _GradeBanner({required this.grade});
+
+  final AiSectionGrade grade;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = grade.status == AiGradeStatus.pass ? ReviewStatus.pass : ReviewStatus.fail;
+    return Row(
+      children: [
+        Icon(status.icon, color: status.color, size: 20),
+        const SizedBox(width: 8),
+        Text(status.label, style: Theme.of(context).textTheme.titleMedium?.copyWith(color: status.color)),
+      ],
+    );
   }
 }
 
@@ -323,7 +439,7 @@ class _IssueCard extends StatelessWidget {
   final AiIssue issue;
   final DocumentSection? section;
   final ValueChanged<DocumentSection> onSectionTap;
-  final void Function(DocumentSection section, String text) onAddToNote;
+  final void Function(DocumentSection section, String text)? onAddToNote;
 
   static const _severityLabels = {
     AiIssueSeverity.high: 'Nghiêm trọng',
@@ -396,11 +512,11 @@ class _IssueCard extends StatelessWidget {
               const SizedBox(height: 4),
               SelectableText('Gợi ý: ${issue.suggestion}'),
             ],
-            if (section != null)
+            if (section != null && onAddToNote != null)
               Align(
                 alignment: Alignment.centerRight,
                 child: TextButton.icon(
-                  onPressed: () => onAddToNote(
+                  onPressed: () => onAddToNote!(
                     section,
                     '${issue.title}${issue.suggestion.isEmpty ? '' : ' — ${issue.suggestion}'}',
                   ),

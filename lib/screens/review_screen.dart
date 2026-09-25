@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../models/document_ai_review.dart';
 import '../models/document_section.dart';
 import '../models/review_version.dart';
 import '../models/section_content.dart';
@@ -50,7 +51,8 @@ class _ReviewScreenState extends State<ReviewScreen> {
   final Map<String, Future<SectionContent>> _contentCache = {};
 
   Map<String, SectionReview> _reviews = {};
-  DocumentSection? _selected;
+  final ValueNotifier<DocumentSection?> _focused = ValueNotifier<DocumentSection?>(null);
+  final ValueNotifier<String?> _scrollRequest = ValueNotifier<String?>(null);
   bool _aiPanelOpen = false;
 
   /// Bumped when a note is changed from outside [SectionReviewPanel] (e.g.
@@ -69,12 +71,21 @@ class _ReviewScreenState extends State<ReviewScreen> {
 
   @override
   void dispose() {
+    _focused.dispose();
+    _scrollRequest.dispose();
     _contentLoader.dispose();
     super.dispose();
   }
 
-  void _selectSection(DocumentSection section) {
-    setState(() => _selected = section);
+  void _focusFromScroll(DocumentSection section) {
+    if (_focused.value?.id == section.id) return;
+    _focused.value = section;
+  }
+
+  void _focusFromTree(DocumentSection section) {
+    _focused.value = section;
+    _scrollRequest.value = null;
+    _scrollRequest.value = section.id;
   }
 
   Future<SectionContent> _loadContent(DocumentSection section) {
@@ -101,13 +112,40 @@ class _ReviewScreenState extends State<ReviewScreen> {
   }
 
   void _addToNote(DocumentSection section, String text) {
+    if (widget.readOnly) return;
     final review = _reviews[section.id] ?? const SectionReview();
     final note = review.note.trim().isEmpty ? '- $text' : '${review.note.trimRight()}\n- $text';
-    _updateReview(section, review.copyWith(note: note));
-    setState(() => _noteRevision++);
-    _selectSection(section);
+    setState(() {
+      _reviews = {..._reviews, section.id: review.copyWith(note: note)};
+      _noteRevision++;
+    });
+    _reviewStore.saveVersion(widget.version, _reviews);
+    _focusFromTree(section);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Đã thêm vào ghi chú của "${section.title}".')),
+    );
+  }
+
+  void _applyAiReview(DocumentAiReview review) {
+    if (widget.readOnly || review.sectionGrades.isEmpty) return;
+    final next = Map<String, SectionReview>.from(_reviews);
+    for (final grade in review.sectionGrades) {
+      next[grade.sectionId] = SectionReview(
+        status: grade.status == AiGradeStatus.pass ? ReviewStatus.pass : ReviewStatus.fail,
+        note: sectionNoteFromGrade(grade, review.issues),
+      );
+    }
+    setState(() {
+      _reviews = next;
+      _noteRevision++;
+      _aiPanelOpen = true;
+    });
+    _reviewStore.saveVersion(widget.version, next);
+    final pass = next.values.where((item) => item.status == ReviewStatus.pass).length;
+    final fail = next.values.where((item) => item.status == ReviewStatus.fail).length;
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Đã chấm $pass mục đạt, $fail mục chưa đạt và ghi chú vào từng mục.')),
     );
   }
 
@@ -161,7 +199,6 @@ class _ReviewScreenState extends State<ReviewScreen> {
           }
 
           final flat = _flatten(outline.sections);
-          final selected = _selected;
 
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -174,68 +211,81 @@ class _ReviewScreenState extends State<ReviewScreen> {
                 ),
               if (outline.warning != null) _WarningBanner(message: outline.warning!),
               Expanded(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    SizedBox(
-                      width: 380,
-                      child: OutlineTree(
-                        sections: outline.sections,
-                        selectedId: selected?.id,
-                        reviewState: _reviews,
-                        onSectionSelected: _selectSection,
-                      ),
-                    ),
-                    const VerticalDivider(width: 1),
-                    Expanded(
-                      child: Column(
-                        children: [
-                          Expanded(
-                            child: DocumentView(
-                              sections: flat,
-                              selectedId: selected?.id,
-                              reviews: _reviews,
-                              loadContent: _loadContent,
-                              onSectionFocused: _selectSection,
-                            ),
+                child: ValueListenableBuilder<DocumentSection?>(
+                  valueListenable: _focused,
+                  child: DocumentView(
+                    sections: flat,
+                    selectedId: null,
+                    scrollRequest: _scrollRequest,
+                    reviews: _reviews,
+                    loadContent: _loadContent,
+                    onSectionFocused: _focusFromScroll,
+                  ),
+                  builder: (context, selected, document) {
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SizedBox(
+                          width: 380,
+                          child: OutlineTree(
+                            sections: outline.sections,
+                            selectedId: selected?.id,
+                            reviewState: _reviews,
+                            onSectionSelected: _focusFromTree,
                           ),
-                          SectionReviewPanel(
-                            key: ValueKey(selected?.id),
-                            section: selected,
-                            readOnly: widget.readOnly,
-                            review: selected == null
-                                ? const SectionReview()
-                                : (_reviews[selected.id] ?? const SectionReview()),
-                            onReviewChanged: selected == null || widget.readOnly
-                                ? (_) {}
-                                : (review) => _updateReview(selected, review),
+                        ),
+                        const VerticalDivider(width: 1),
+                        Expanded(
+                          child: Column(
+                            children: [
+                              Expanded(child: document!),
+                              SectionReviewPanel(
+                                key: ValueKey('${selected?.id}-$_noteRevision'),
+                                section: selected,
+                                readOnly: widget.readOnly,
+                                review: selected == null
+                                    ? const SectionReview()
+                                    : (_reviews[selected.id] ?? const SectionReview()),
+                                onReviewChanged: selected == null || widget.readOnly
+                                    ? (_) {}
+                                    : (review) => _updateReview(selected, review),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
-                    ),
-                    Visibility(
-                      visible: _aiPanelOpen,
-                      maintainState: true,
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          const VerticalDivider(width: 1),
-                          SizedBox(
-                            width: 420,
-                            child: AiReviewPanel(
-                              filePath: _path,
-                              sections: outline.sections,
-                              contentLoader: _contentLoader,
-                              template: widget.template,
-                              onSectionTap: _selectSection,
-                              onAddToNote: _addToNote,
-                              onClose: () => setState(() => _aiPanelOpen = false),
-                            ),
+                        ),
+                        Visibility(
+                          visible: _aiPanelOpen,
+                          maintainState: true,
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              const VerticalDivider(width: 1),
+                              SizedBox(
+                                width: 420,
+                                child: AiReviewPanel(
+                                  version: widget.version,
+                                  store: _reviewStore,
+                                  readOnly: widget.readOnly,
+                                  filePath: _path,
+                                  sections: outline.sections,
+                                  contentLoader: _contentLoader,
+                                  template: widget.template,
+                                  focusedSectionId: selected?.id,
+                                  onSectionTap: _focusFromTree,
+                                  onAddToNote: _addToNote,
+                                  onReviewReady: _applyAiReview,
+                                  onReviewLoaded: () {
+                                    if (!_aiPanelOpen && mounted) setState(() => _aiPanelOpen = true);
+                                  },
+                                  onClose: () => setState(() => _aiPanelOpen = false),
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
-                    ),
-                  ],
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ),
             ],

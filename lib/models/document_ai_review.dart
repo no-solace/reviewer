@@ -1,3 +1,7 @@
+import 'document_section.dart';
+
+enum AiGradeStatus { pass, fail }
+
 enum AiIssueSeverity { high, medium, low }
 
 enum AiIssueCategory { missingContent, inconsistency, ambiguity, untestable, diagram, other }
@@ -15,6 +19,29 @@ class AiMissingSection {
     return AiMissingSection(
       name: json['name'] as String? ?? '',
       reason: json['reason'] as String? ?? '',
+    );
+  }
+}
+
+/// Pass/fail for one outline section, with the note shown in the margin.
+class AiSectionGrade {
+  const AiSectionGrade({required this.sectionId, required this.status, required this.note});
+
+  final String sectionId;
+  final AiGradeStatus status;
+  final String note;
+
+  Map<String, dynamic> toJson() => {
+    'sectionId': sectionId,
+    'status': status.name,
+    'note': note,
+  };
+
+  factory AiSectionGrade.fromJson(Map<String, dynamic> json) {
+    return AiSectionGrade(
+      sectionId: json['sectionId'] as String? ?? '',
+      status: json['status'] == 'pass' ? AiGradeStatus.pass : AiGradeStatus.fail,
+      note: json['note'] as String? ?? '',
     );
   }
 }
@@ -74,6 +101,7 @@ class DocumentAiReview {
     required this.strengths,
     required this.missingSections,
     required this.issues,
+    this.sectionGrades = const [],
     required this.createdAt,
     required this.model,
     this.templateName,
@@ -83,6 +111,9 @@ class DocumentAiReview {
   final List<String> strengths;
   final List<AiMissingSection> missingSections;
   final List<AiIssue> issues;
+
+  /// One grade for every outline section. Empty on reviews saved before grading.
+  final List<AiSectionGrade> sectionGrades;
   final DateTime createdAt;
 
   /// The model that actually produced the review (may differ from the one
@@ -98,6 +129,7 @@ class DocumentAiReview {
     'strengths': strengths,
     'missingSections': [for (final m in missingSections) m.toJson()],
     'issues': [for (final i in issues) i.toJson()],
+    'sectionGrades': [for (final grade in sectionGrades) grade.toJson()],
     'createdAt': createdAt.toIso8601String(),
     'model': model,
     if (templateName != null) 'templateName': templateName,
@@ -121,9 +153,97 @@ class DocumentAiReview {
         for (final i in json['issues'] as List? ?? const [])
           AiIssue.fromJson(i as Map<String, dynamic>),
       ],
+      sectionGrades: [
+        for (final grade in json['sectionGrades'] as List? ?? const [])
+          if (grade is Map<String, dynamic> && (grade['sectionId'] as String? ?? '').isNotEmpty)
+            AiSectionGrade.fromJson(grade),
+      ],
       createdAt: DateTime.tryParse(json['createdAt'] as String? ?? '') ?? createdAt ?? DateTime.now(),
       model: json['model'] as String? ?? model ?? '',
       templateName: json['templateName'] as String?,
     );
   }
+}
+
+/// One grade for every outline section. Grades the model omitted are filled
+/// in: a medium or high issue makes the section fail, otherwise it passes.
+List<AiSectionGrade> completeSectionGrades({
+  required List<DocumentSection> sections,
+  required List<AiSectionGrade> provided,
+  required List<AiIssue> issues,
+}) {
+  final flat = _flattenSections(sections);
+  final validIds = flat.map((section) => section.id).toSet();
+  final byId = <String, AiSectionGrade>{
+    for (final grade in provided)
+      if (validIds.contains(grade.sectionId)) grade.sectionId: grade,
+  };
+  final issuesBySection = <String, List<AiIssue>>{};
+  for (final issue in issues) {
+    final id = issue.sectionId;
+    if (id == null || !validIds.contains(id)) continue;
+    issuesBySection.putIfAbsent(id, () => []).add(issue);
+  }
+
+  return [
+    for (final section in flat)
+      _preferMaterialFailure(
+        section.id,
+        byId[section.id],
+        issuesBySection[section.id] ?? const [],
+      ),
+  ];
+}
+
+AiSectionGrade _preferMaterialFailure(String sectionId, AiSectionGrade? provided, List<AiIssue> issues) {
+  final fromIssues = _gradeFromIssues(sectionId, issues);
+  if (provided == null) return fromIssues;
+  final material = issues.any((issue) => issue.severity != AiIssueSeverity.low);
+  if (material && provided.status == AiGradeStatus.pass) {
+    final note = provided.note.trim();
+    return AiSectionGrade(sectionId: sectionId, status: AiGradeStatus.fail, note: note.isEmpty ? fromIssues.note : note);
+  }
+  return provided;
+}
+
+/// Margin note for one graded section: the verdict, then each problem that
+/// is not already written in that verdict.
+String sectionNoteFromGrade(AiSectionGrade grade, List<AiIssue> issues) {
+  final summary = grade.note.trim();
+  final buffer = StringBuffer();
+  if (summary.isNotEmpty) buffer.writeln(summary);
+  for (final issue in issues) {
+    if (issue.sectionId != grade.sectionId) continue;
+    final title = issue.title.trim();
+    if (title.isEmpty || summary.contains(title)) continue;
+    final suggestion = issue.suggestion.trim();
+    buffer.writeln(suggestion.isEmpty ? '- $title' : '- $title — $suggestion');
+  }
+  final text = buffer.toString().trim();
+  if (text.isNotEmpty) return text;
+  return grade.status == AiGradeStatus.pass ? 'Đạt.' : 'Chưa đạt.';
+}
+
+AiSectionGrade _gradeFromIssues(String sectionId, List<AiIssue> issues) {
+  final material = issues.any((issue) => issue.severity != AiIssueSeverity.low);
+  final note = issues.isEmpty
+      ? 'Đạt.'
+      : issues
+            .map((issue) {
+              final suggestion = issue.suggestion.trim();
+              return suggestion.isEmpty ? issue.title : '${issue.title} — $suggestion';
+            })
+            .where((line) => line.trim().isNotEmpty)
+            .join('\n');
+  return AiSectionGrade(
+    sectionId: sectionId,
+    status: material ? AiGradeStatus.fail : AiGradeStatus.pass,
+    note: note.isEmpty ? (material ? 'Chưa đạt.' : 'Đạt.') : note,
+  );
+}
+
+List<DocumentSection> _flattenSections(List<DocumentSection> sections) {
+  return [
+    for (final section in sections) ...[section, ..._flattenSections(section.children)],
+  ];
 }

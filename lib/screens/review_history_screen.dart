@@ -167,7 +167,7 @@ class _VersionCard extends StatelessWidget {
                   Text(date, style: theme.textTheme.bodySmall),
                   const SizedBox(height: 4),
                   Text(
-                    '${item.passCount} đạt · ${item.failCount} chưa đạt · ${item.noteCount} ghi chú',
+                    '${item.passCount} đạt · ${item.failCount} chưa đạt · ${item.noteCount} ghi chú${item.hasAiReview ? ' · AI' : ''}',
                     style: theme.textTheme.bodyMedium,
                   ),
                 ],

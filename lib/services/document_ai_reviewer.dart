@@ -96,6 +96,17 @@ class DocumentAiReviewer {
         for (final issue in review.issues)
           validIds.contains(issue.sectionId) ? issue : AiIssue.fromJson({...issue.toJson(), 'sectionId': ''}),
       ],
+      sectionGrades: completeSectionGrades(
+        sections: sections,
+        provided: [
+          for (final grade in review.sectionGrades)
+            if (validIds.contains(grade.sectionId)) grade,
+        ],
+        issues: [
+          for (final issue in review.issues)
+            if (validIds.contains(issue.sectionId)) issue,
+        ],
+      ),
       createdAt: review.createdAt,
       model: review.model,
       templateName: template?.name,
@@ -187,7 +198,7 @@ class DocumentAiReviewer {
   }
 
   static const _systemPrompt = '''
-Bạn là trợ lý giúp giảng viên ngành Kỹ thuật phần mềm chấm tài liệu đặc tả yêu cầu (SRS / requirement document) do sinh viên nộp. Giảng viên là người ra quyết định cuối cùng; nhiệm vụ của bạn là chỉ ra những điểm họ nên xem kỹ, kèm bằng chứng cụ thể.
+Bạn là trợ lý giúp giảng viên ngành Kỹ thuật phần mềm chấm tài liệu đặc tả yêu cầu (SRS / requirement document) do sinh viên nộp. Giảng viên là người ra quyết định cuối cùng. Bạn phải chấm Đạt hoặc Chưa đạt cho từng mục trong mục lục, và ghi rõ từng vấn đề của mục đó.
 
 Kiểm tra toàn bộ tài liệu theo các hướng sau:
 1. Thiếu mục / sai cấu trúc:
@@ -197,6 +208,12 @@ Kiểm tra toàn bộ tài liệu theo các hướng sau:
 2. Mâu thuẫn giữa các phần: ví dụ use case không khớp danh sách yêu cầu chức năng, actor trong sơ đồ khác với phần mô tả người dùng, thực thể trong ERD/sơ đồ lớp không khớp dữ liệu được nhắc tới, mã yêu cầu trùng hoặc bị tham chiếu sai.
 3. Yêu cầu mơ hồ hoặc không kiểm thử được: từ ngữ như "nhanh", "thân thiện", "dễ dùng", "tối ưu" không có tiêu chí đo; yêu cầu gộp nhiều ý; thiếu tiêu chí chấp nhận.
 4. Sơ đồ/hình ảnh: sơ đồ sai ký hiệu, không đọc được, hoặc không khớp với nội dung chữ.
+5. Chấm Đạt hoặc Chưa đạt cho MỌI mục có id trong mục lục, không chỉ mục có lỗi:
+   - sectionGrades có đúng một phần tử cho mỗi id trong ngoặc vuông, không bỏ sót.
+   - status "fail" khi mục thiếu nội dung trọng yếu, mâu thuẫn, mơ hồ nghiêm trọng, sơ đồ sai, hoặc không đủ để triển khai và kiểm thử.
+   - status "pass" khi mục đủ dùng, kể cả khi chỉ còn lỗi trình bày nhỏ (severity low).
+   - note là nhận xét giảng viên đưa cho sinh viên. Mục Chưa đạt nêu từng vấn đề của mục đó. Mục Đạt nêu ngắn vì sao đạt.
+   - issues vẫn liệt kê từng vấn đề cụ thể, gắn đúng sectionId. Mục Chưa đạt phải có ít nhất một issue mức high hoặc medium.
 
 Quy tắc:
 - Mỗi vấn đề phải có bằng chứng: trích nguyên văn ngắn hoặc mô tả chính xác vị trí trong tài liệu. Không suy đoán nội dung không có trong tài liệu.
@@ -252,8 +269,25 @@ Quy tắc:
           'additionalProperties': false,
         },
       },
+      'sectionGrades': {
+        'type': 'array',
+        'description': 'Đúng một kết quả Đạt hoặc Chưa đạt cho mỗi id mục trong mục lục.',
+        'items': {
+          'type': 'object',
+          'properties': {
+            'sectionId': {'type': 'string'},
+            'status': {
+              'type': 'string',
+              'enum': ['pass', 'fail'],
+            },
+            'note': {'type': 'string'},
+          },
+          'required': ['sectionId', 'status', 'note'],
+          'additionalProperties': false,
+        },
+      },
     },
-    'required': ['overallAssessment', 'strengths', 'missingSections', 'issues'],
+    'required': ['overallAssessment', 'strengths', 'missingSections', 'issues', 'sectionGrades'],
     'additionalProperties': false,
   };
 }

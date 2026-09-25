@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
 
+import '../models/document_ai_review.dart';
 import '../models/review_version.dart';
 import '../models/section_review.dart';
 
@@ -53,6 +54,7 @@ class ReviewStore {
           passCount: reviews.values.where((review) => review.status == ReviewStatus.pass).length,
           failCount: reviews.values.where((review) => review.status == ReviewStatus.fail).length,
           noteCount: reviews.values.where((review) => review.note.trim().isNotEmpty).length,
+          hasAiReview: await File(_aiReviewPath(folder.path, id)).exists(),
         ),
       );
     }
@@ -116,6 +118,27 @@ class ReviewStore {
     );
   }
 
+  Future<void> saveAiReview(ReviewVersion version, DocumentAiReview review) async {
+    final root = await _root();
+    final folder = _join(root.path, documentKeyFor(version.fileName));
+    final file = File(_aiReviewPath(folder, version.id));
+    await file.create(recursive: true);
+    await file.writeAsString(jsonEncode(review.toJson()));
+  }
+
+  Future<DocumentAiReview?> loadAiReview(ReviewVersion version) async {
+    final root = await _root();
+    final folder = _join(root.path, documentKeyFor(version.fileName));
+    final file = File(_aiReviewPath(folder, version.id));
+    if (!await file.exists()) return null;
+    try {
+      final json = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      return DocumentAiReview.fromJson(json);
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> _importLegacy({
     required String fileName,
     required String sourcePath,
@@ -156,6 +179,10 @@ class ReviewStore {
 
   String _reviewPath(String folder, String id) {
     return _join(_join(_join(folder, 'versions'), id), 'review.json');
+  }
+
+  String _aiReviewPath(String folder, String id) {
+    return _join(_join(_join(folder, 'versions'), id), 'ai_review.json');
   }
 
   Future<Directory> _root() async {

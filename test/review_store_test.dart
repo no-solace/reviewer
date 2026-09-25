@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:reviewer/models/document_ai_review.dart';
 import 'package:reviewer/models/section_review.dart';
 import 'package:reviewer/services/review_store.dart';
 
@@ -37,5 +38,25 @@ void main() {
     expect(reloaded['0']?.note, 'Thiếu biểu đồ');
     expect(reloaded['0']?.status, ReviewStatus.fail);
     expect(await store.loadVersion(second), isEmpty);
+
+    final aiReview = DocumentAiReview(
+      overallAssessment: 'Cần sửa use case.',
+      strengths: ['Có mục lục'],
+      missingSections: [],
+      issues: [],
+      sectionGrades: [AiSectionGrade(sectionId: '0', status: AiGradeStatus.fail, note: 'Thiếu biểu đồ')],
+      createdAt: DateTime.utc(2026, 9, 25),
+      model: 'test-model',
+    );
+    await store.saveAiReview(first, aiReview);
+
+    final loaded = await store.loadAiReview(first);
+    expect(loaded?.overallAssessment, 'Cần sửa use case.');
+    expect(loaded?.sectionGrades.single.status, AiGradeStatus.fail);
+    expect(await store.loadAiReview(second), isNull);
+
+    final listed = await store.listVersions(fileName: 'Report.docx');
+    expect(listed[0].hasAiReview, isTrue);
+    expect(listed[1].hasAiReview, isFalse);
   });
 }
