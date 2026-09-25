@@ -4,6 +4,7 @@ import '../models/document_section.dart';
 import '../models/review_version.dart';
 import '../models/section_content.dart';
 import '../models/section_review.dart';
+import '../models/structure_template.dart';
 import '../services/document_structure_service.dart';
 import '../services/review_store.dart';
 import '../services/section_content_loader.dart';
@@ -32,6 +33,9 @@ class ReviewScreen extends StatefulWidget {
   final bool readOnly;
   final ReviewStore? store;
 
+  /// Structure template the AI check compares the document against.
+  final StructureTemplate? template;
+
   @override
   State<ReviewScreen> createState() => _ReviewScreenState();
 }
@@ -45,6 +49,12 @@ class _ReviewScreenState extends State<ReviewScreen> {
 
   Map<String, SectionReview> _reviews = {};
   DocumentSection? _selected;
+  bool _aiPanelOpen = false;
+
+  /// Bumped when a note is changed from outside [SectionReviewPanel] (e.g.
+  /// "Thêm vào ghi chú" in the AI panel) so the panel is rebuilt with a
+  /// fresh note controller.
+  int _noteRevision = 0;
 
   @override
   void initState() {
@@ -84,6 +94,17 @@ class _ReviewScreenState extends State<ReviewScreen> {
           store: _reviewStore,
         ),
       ),
+    );
+  }
+
+  void _addToNote(DocumentSection section, String text) {
+    final review = _reviews[section.id] ?? const SectionReview();
+    final note = review.note.trim().isEmpty ? '- $text' : '${review.note.trimRight()}\n- $text';
+    _updateReview(section, review.copyWith(note: note));
+    setState(() => _noteRevision++);
+    _selectSection(section);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Đã thêm vào ghi chú của "${section.title}".')),
     );
   }
 
@@ -177,6 +198,28 @@ class _ReviewScreenState extends State<ReviewScreen> {
                             onReviewChanged: selected == null || widget.readOnly
                                 ? (_) {}
                                 : (review) => _updateReview(selected, review),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Visibility(
+                      visible: _aiPanelOpen,
+                      maintainState: true,
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const VerticalDivider(width: 1),
+                          SizedBox(
+                            width: 420,
+                            child: AiReviewPanel(
+                              filePath: _path,
+                              sections: outline.sections,
+                              contentLoader: _contentLoader,
+                              template: widget.template,
+                              onSectionTap: _selectSection,
+                              onAddToNote: _addToNote,
+                              onClose: () => setState(() => _aiPanelOpen = false),
+                            ),
                           ),
                         ],
                       ),
