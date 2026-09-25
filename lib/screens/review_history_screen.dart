@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/review_version.dart';
+import '../models/structure_template.dart';
 import '../services/review_store.dart';
 import 'review_screen.dart';
 
@@ -12,11 +13,13 @@ class ReviewHistoryScreen extends StatefulWidget {
     required this.fileName,
     required this.sourcePath,
     this.store,
+    this.template,
   });
 
   final String fileName;
   final String sourcePath;
   final ReviewStore? store;
+  final StructureTemplate? template;
 
   @override
   State<ReviewHistoryScreen> createState() => _ReviewHistoryScreenState();
@@ -43,6 +46,7 @@ class _ReviewHistoryScreenState extends State<ReviewHistoryScreen> {
           sourcePath: widget.sourcePath,
           readOnly: readOnly,
           store: _store,
+          template: widget.template,
         ),
       ),
     );
@@ -71,6 +75,7 @@ class _ReviewHistoryScreenState extends State<ReviewHistoryScreen> {
             versionNumber: nextNumber,
             sourcePath: widget.sourcePath,
             store: _store,
+            template: widget.template,
           ),
         ),
       );

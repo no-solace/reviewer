@@ -8,6 +8,7 @@ import '../models/structure_template.dart';
 import '../services/document_structure_service.dart';
 import '../services/review_store.dart';
 import '../services/section_content_loader.dart';
+import '../widgets/ai_review_panel.dart';
 import '../widgets/document_view.dart';
 import '../widgets/outline_tree.dart';
 import '../widgets/section_review_panel.dart';
@@ -23,6 +24,7 @@ class ReviewScreen extends StatefulWidget {
     required this.sourcePath,
     this.readOnly = false,
     this.store,
+    this.template,
   });
 
   final ReviewVersion version;
@@ -92,6 +94,7 @@ class _ReviewScreenState extends State<ReviewScreen> {
           fileName: widget.version.fileName,
           sourcePath: widget.sourcePath,
           store: _reviewStore,
+          template: widget.template,
         ),
       ),
     );
@@ -129,6 +132,14 @@ class _ReviewScreenState extends State<ReviewScreen> {
             tooltip: 'Các bản review',
             onPressed: _openHistory,
             icon: const Icon(Icons.history),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: FilledButton.tonalIcon(
+              onPressed: () => setState(() => _aiPanelOpen = !_aiPanelOpen),
+              icon: const Icon(Icons.auto_awesome),
+              label: const Text('AI kiểm tra'),
+            ),
           ),
         ],
       ),

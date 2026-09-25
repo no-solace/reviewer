@@ -1,8 +1,14 @@
 import 'package:flutter/material.dart';
 
+import 'models/ai_settings.dart';
+import 'models/structure_template.dart';
 import 'screens/review_history_screen.dart';
 import 'screens/review_screen.dart';
+import 'screens/structure_templates_screen.dart';
+import 'services/ai_settings_store.dart';
 import 'services/review_store.dart';
+import 'services/structure_template_store.dart';
+import 'widgets/ai_settings_dialog.dart';
 import 'widgets/document_uploader.dart';
 
 void main() {
@@ -37,6 +43,7 @@ Future<void> _openDocument(
   BuildContext context, {
   required String fileName,
   required String sourcePath,
+  StructureTemplate? template,
 }) async {
   final store = ReviewStore();
   final versions = await store.listVersions(fileName: fileName, legacySourcePath: sourcePath);
@@ -49,6 +56,7 @@ Future<void> _openDocument(
           fileName: fileName,
           sourcePath: sourcePath,
           store: store,
+          template: template,
         ),
       ),
     );
@@ -73,6 +81,7 @@ Future<void> _openDocument(
           versionNumber: 1,
           sourcePath: sourcePath,
           store: store,
+          template: template,
         ),
       ),
     );
@@ -136,16 +145,37 @@ class _MyHomePageState extends State<MyHomePage> {
         title: Text(widget.title),
       ),
       body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 480),
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: DocumentUploader(
-              onDocumentSelected: (file) {
-                final path = file?.path;
-                if (file == null || path == null) return;
-                _openDocument(context, fileName: file.name, sourcePath: path);
-              },
+        child: SingleChildScrollView(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 520),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _ConfigCard(
+                    aiSettings: _aiSettings,
+                    templates: _templates,
+                    onEditAiSettings: _editAiSettings,
+                    onSelectTemplate: _selectTemplate,
+                    onManageTemplates: _manageTemplates,
+                  ),
+                  const SizedBox(height: 24),
+                  DocumentUploader(
+                    onDocumentSelected: (file) {
+                      final path = file?.path;
+                      if (file == null || path == null) return;
+                      _openDocument(
+                        context,
+                        fileName: file.name,
+                        sourcePath: path,
+                        template: _templates?.selected,
+                      );
+                    },
+                  ),
+                ],
+              ),
             ),
           ),
         ),
