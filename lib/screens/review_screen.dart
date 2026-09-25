@@ -4,18 +4,23 @@ import 'package:flutter/material.dart';
 import '../models/document_section.dart';
 import '../models/section_content.dart';
 import '../models/section_review.dart';
+import '../models/structure_template.dart';
 import '../services/document_structure_service.dart';
 import '../services/review_store.dart';
 import '../services/section_content_loader.dart';
+import '../widgets/ai_review_panel.dart';
 import '../widgets/outline_tree.dart';
 import '../widgets/section_review_panel.dart';
 
 /// Main review screen for one document: an outline tree on the left, and
 /// the selected section's content + pass/fail controls on the right.
 class ReviewScreen extends StatefulWidget {
-  const ReviewScreen({super.key, required this.file});
+  const ReviewScreen({super.key, required this.file, this.template});
 
   final PlatformFile file;
+
+  /// Structure template the AI check compares the document against.
+  final StructureTemplate? template;
 
   @override
   State<ReviewScreen> createState() => _ReviewScreenState();
@@ -30,6 +35,12 @@ class _ReviewScreenState extends State<ReviewScreen> {
 
   Map<String, SectionReview> _reviews = {};
   DocumentSection? _selected;
+  bool _aiPanelOpen = false;
+
+  /// Bumped when a note is changed from outside [SectionReviewPanel] (e.g.
+  /// "Thêm vào ghi chú" in the AI panel) so the panel is rebuilt with a
+  /// fresh note controller.
+  int _noteRevision = 0;
 
   @override
   void initState() {
@@ -56,6 +67,17 @@ class _ReviewScreenState extends State<ReviewScreen> {
     _reviewStore.save(_path, _reviews);
   }
 
+  void _addToNote(DocumentSection section, String text) {
+    final review = _reviews[section.id] ?? const SectionReview();
+    final note = review.note.trim().isEmpty ? '- $text' : '${review.note.trimRight()}\n- $text';
+    _updateReview(section, review.copyWith(note: note));
+    setState(() => _noteRevision++);
+    _selectSection(section);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Đã thêm vào ghi chú của "${section.title}".')),
+    );
+  }
+
   List<DocumentSection> _flatten(List<DocumentSection> sections) {
     return [
       for (final section in sections) ...[section, ..._flatten(section.children)],
@@ -70,7 +92,19 @@ class _ReviewScreenState extends State<ReviewScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(widget.file.name)),
+      appBar: AppBar(
+        title: Text(widget.file.name),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: FilledButton.tonalIcon(
+              onPressed: () => setState(() => _aiPanelOpen = !_aiPanelOpen),
+              icon: const Icon(Icons.auto_awesome),
+              label: const Text('AI kiểm tra'),
+            ),
+          ),
+        ],
+      ),
       body: FutureBuilder<DocumentOutline>(
         future: _outlineFuture,
         builder: (context, snapshot) {
@@ -129,7 +163,7 @@ class _ReviewScreenState extends State<ReviewScreen> {
                     const VerticalDivider(width: 1),
                     Expanded(
                       child: SectionReviewPanel(
-                        key: ValueKey(selected?.id),
+                        key: ValueKey('${selected?.id}#$_noteRevision'),
                         section: selected,
                         contentFuture: selected == null ? null : _contentCache[selected.id],
                         review: selected == null
@@ -138,6 +172,28 @@ class _ReviewScreenState extends State<ReviewScreen> {
                         onReviewChanged: selected == null
                             ? (_) {}
                             : (review) => _updateReview(selected, review),
+                      ),
+                    ),
+                    Visibility(
+                      visible: _aiPanelOpen,
+                      maintainState: true,
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const VerticalDivider(width: 1),
+                          SizedBox(
+                            width: 420,
+                            child: AiReviewPanel(
+                              filePath: _path,
+                              sections: outline.sections,
+                              contentLoader: _contentLoader,
+                              template: widget.template,
+                              onSectionTap: _selectSection,
+                              onAddToNote: _addToNote,
+                              onClose: () => setState(() => _aiPanelOpen = false),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],

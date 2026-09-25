@@ -15,6 +15,14 @@
 
 Giai đoạn "trích xuất nội dung/hình ảnh + đánh dấu" vừa code xong, đã build/analyze sạch nhưng **chưa được người dùng bấm thử tay** với tài liệu thật (chọn mục, xem nội dung, đánh dấu, đóng mở lại app để kiểm tra có lưu không).
 
+**AI kiểm tra toàn bộ tài liệu** (nút "AI kiểm tra" trên màn hình chấm) — gửi cả tài liệu cho AI và nhận về: nhận xét tổng quan, mục còn thiếu, danh sách vấn đề (mâu thuẫn, mơ hồ, không kiểm thử được, sơ đồ) gắn với từng mục; bấm để nhảy tới mục, hoặc "Thêm vào ghi chú". PDF gửi nguyên file (AI đọc cả chữ và hình trang); DOCX gửi text + ảnh theo từng mục. Kết quả lưu lại theo tài liệu — `lib/services/document_ai_reviewer.dart`, `lib/widgets/ai_review_panel.dart`.
+
+**Cấu hình tại màn hình chọn tài liệu**:
+- *Cấu hình AI* — chọn nhà cung cấp Anthropic (Claude) / OpenAI (GPT) / Google Gemini, API key và model riêng cho từng bên (trống thì dùng biến môi trường `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY`). Gọi thẳng HTTP vì Dart không có SDK chính thức — `lib/services/llm/`, `lib/widgets/ai_settings_dialog.dart`.
+- *Mẫu cấu trúc tài liệu* — giảng viên soạn nhiều mẫu (mỗi dòng một mục, thụt lề = mục con, `?` = tuỳ chọn, sau `|` = yêu cầu nội dung), chọn mẫu dùng cho bài chấm; AI đối chiếu thiếu mục/sai cấu trúc theo mẫu thay vì IEEE 830 chung — `lib/models/structure_template.dart`, `lib/screens/structure_templates_screen.dart`.
+
+**Chưa chạy thử với API key thật của cả ba nhà cung cấp** (định dạng request/response đã có unit test, nhưng chưa gọi API thật).
+
 ## Sắp tới (chưa làm)
 
 - Xuất báo cáo tổng hợp kết quả chấm (PDF/Word/Excel) cho một tài liệu.
