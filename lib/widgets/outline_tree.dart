@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../models/document_section.dart';
 import '../models/section_review.dart';
+import 'review_status.dart';
 
-/// Renders a document's heading structure as a selectable, expandable tree.
-/// Each tile shows a small colored dot for its review status.
+/// Heading tree with a pinned summary of unreviewed, passed, and failed sections.
 class OutlineTree extends StatefulWidget {
   const OutlineTree({
     super.key,
@@ -23,9 +23,35 @@ class OutlineTree extends StatefulWidget {
   State<OutlineTree> createState() => _OutlineTreeState();
 }
 
+class _Counts {
+  int unreviewed = 0;
+  int pass = 0;
+  int fail = 0;
+
+  int get total => unreviewed + pass + fail;
+
+  void add(ReviewStatus status) {
+    switch (status) {
+      case ReviewStatus.unreviewed:
+        unreviewed++;
+      case ReviewStatus.pass:
+        pass++;
+      case ReviewStatus.fail:
+        fail++;
+    }
+  }
+
+  void include(_Counts other) {
+    unreviewed += other.unreviewed;
+    pass += other.pass;
+    fail += other.fail;
+  }
+}
+
 class _OutlineTreeState extends State<OutlineTree> {
   final Set<String> _expandedIds = {};
   bool _expandedInitialized = false;
+  ReviewStatus? _statusFilter;
 
   @override
   void didUpdateWidget(covariant OutlineTree oldWidget) {
@@ -33,6 +59,7 @@ class _OutlineTreeState extends State<OutlineTree> {
     if (oldWidget.sections != widget.sections) {
       _expandedIds.clear();
       _expandedInitialized = false;
+      _statusFilter = null;
     }
   }
 
@@ -44,22 +71,90 @@ class _OutlineTreeState extends State<OutlineTree> {
     }
   }
 
+  ReviewStatus _statusOf(DocumentSection section) {
+    return widget.reviewState[section.id]?.status ?? ReviewStatus.unreviewed;
+  }
+
+  _Counts _subtreeCounts(DocumentSection section) {
+    final counts = _Counts()..add(_statusOf(section));
+    for (final child in section.children) {
+      counts.include(_subtreeCounts(child));
+    }
+    return counts;
+  }
+
+  _Counts _descendantCounts(DocumentSection section) {
+    final counts = _Counts();
+    for (final child in section.children) {
+      counts.include(_subtreeCounts(child));
+    }
+    return counts;
+  }
+
+  bool _containsStatus(DocumentSection section, ReviewStatus status) {
+    if (_statusOf(section) == status) return true;
+    for (final child in section.children) {
+      if (_containsStatus(child, status)) return true;
+    }
+    return false;
+  }
+
+  _Counts _totals() {
+    final counts = _Counts();
+    for (final section in widget.sections) {
+      counts.include(_subtreeCounts(section));
+    }
+    return counts;
+  }
+
   @override
   Widget build(BuildContext context) {
     _initExpanded();
-    return ListView(
-      children: [for (final section in widget.sections) _buildTile(section)],
+    final totals = _totals();
+    final reviewed = totals.pass + totals.fail;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _SummaryHeader(
+          totals: totals,
+          reviewed: reviewed,
+          filter: _statusFilter,
+          onFilterChanged: (status) => setState(() => _statusFilter = status),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.only(bottom: 12),
+            children: [for (final section in widget.sections) _buildTile(section)],
+          ),
+        ),
+      ],
     );
   }
 
   Widget _buildTile(DocumentSection section) {
-    final expanded = _expandedIds.contains(section.id);
+    final filter = _statusFilter;
+    if (filter != null && !_containsStatus(section, filter)) {
+      return const SizedBox.shrink();
+    }
+
+    final visibleChildren = [
+      for (final child in section.children)
+        if (filter == null || _containsStatus(child, filter)) child,
+    ];
+    final expanded = filter != null
+        ? visibleChildren.isNotEmpty
+        : _expandedIds.contains(section.id);
+    final descendants = section.children.isEmpty ? null : _descendantCounts(section);
+
     final tile = _SectionTile(
       section: section,
       expanded: expanded,
       selected: section.id == widget.selectedId,
-      status: widget.reviewState[section.id]?.status ?? ReviewStatus.unreviewed,
-      onToggleExpand: section.children.isEmpty
+      status: _statusOf(section),
+      descendants: descendants,
+      onToggleExpand: section.children.isEmpty || filter != null
           ? null
           : () => setState(() {
               expanded ? _expandedIds.remove(section.id) : _expandedIds.add(section.id);
@@ -67,11 +162,124 @@ class _OutlineTreeState extends State<OutlineTree> {
       onSelect: () => widget.onSectionSelected?.call(section),
     );
 
-    if (section.children.isEmpty || !expanded) return tile;
+    if (visibleChildren.isEmpty || !expanded) return tile;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [tile, for (final child in section.children) _buildTile(child)],
+      children: [tile, for (final child in visibleChildren) _buildTile(child)],
+    );
+  }
+}
+
+class _SummaryHeader extends StatelessWidget {
+  const _SummaryHeader({
+    required this.totals,
+    required this.reviewed,
+    required this.filter,
+    required this.onFilterChanged,
+  });
+
+  final _Counts totals;
+  final int reviewed;
+  final ReviewStatus? filter;
+  final ValueChanged<ReviewStatus?> onFilterChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('Tiến độ chấm', style: theme.textTheme.titleSmall),
+          const SizedBox(height: 8),
+          _StatButton(
+            status: ReviewStatus.unreviewed,
+            count: totals.unreviewed,
+            selected: filter == ReviewStatus.unreviewed,
+            onTap: () => onFilterChanged(
+              filter == ReviewStatus.unreviewed ? null : ReviewStatus.unreviewed,
+            ),
+          ),
+          _StatButton(
+            status: ReviewStatus.pass,
+            count: totals.pass,
+            selected: filter == ReviewStatus.pass,
+            onTap: () => onFilterChanged(filter == ReviewStatus.pass ? null : ReviewStatus.pass),
+          ),
+          _StatButton(
+            status: ReviewStatus.fail,
+            count: totals.fail,
+            selected: filter == ReviewStatus.fail,
+            onTap: () => onFilterChanged(filter == ReviewStatus.fail ? null : ReviewStatus.fail),
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(99),
+            child: LinearProgressIndicator(
+              minHeight: 6,
+              value: totals.total == 0 ? 0 : reviewed / totals.total,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            filter == null
+                ? '$reviewed/${totals.total} mục đã chấm'
+                : 'Đang lọc: ${filter!.label}',
+            style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatButton extends StatelessWidget {
+  const _StatButton({
+    required this.status,
+    required this.count,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final ReviewStatus status;
+  final int count;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = status.color;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Material(
+        color: selected ? color.withValues(alpha: 0.14) : Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: selected ? color : color.withValues(alpha: 0.25)),
+            ),
+            child: Row(
+              children: [
+                Icon(status.icon, size: 18, color: color),
+                const SizedBox(width: 8),
+                Expanded(child: Text(status.label)),
+                Text(
+                  '$count',
+                  key: ValueKey('review-count-${status.name}'),
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: color),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -82,6 +290,7 @@ class _SectionTile extends StatelessWidget {
     required this.expanded,
     required this.selected,
     required this.status,
+    required this.descendants,
     required this.onToggleExpand,
     required this.onSelect,
   });
@@ -90,6 +299,7 @@ class _SectionTile extends StatelessWidget {
   final bool expanded;
   final bool selected;
   final ReviewStatus status;
+  final _Counts? descendants;
   final VoidCallback? onToggleExpand;
   final VoidCallback onSelect;
 
@@ -103,20 +313,20 @@ class _SectionTile extends StatelessWidget {
       child: InkWell(
         onTap: onSelect,
         child: Padding(
-          padding: EdgeInsets.only(left: 16.0 * (section.level - 1), top: 4, bottom: 4, right: 8),
+          padding: EdgeInsets.only(left: 12.0 * (section.level - 1), top: 2, bottom: 2, right: 8),
           child: Row(
             children: [
               SizedBox(
-                width: 32,
+                width: 28,
                 child: onToggleExpand == null
                     ? null
                     : IconButton(
-                        icon: Icon(expanded ? Icons.expand_more : Icons.chevron_right),
+                        icon: Icon(expanded ? Icons.expand_more : Icons.chevron_right, size: 20),
                         onPressed: onToggleExpand,
                         visualDensity: VisualDensity.compact,
                       ),
               ),
-              _StatusDot(status: status),
+              Icon(status.icon, size: 16, color: status.color),
               const SizedBox(width: 8),
               Expanded(
                 child: Column(
@@ -134,6 +344,12 @@ class _SectionTile extends StatelessWidget {
                   ],
                 ),
               ),
+              if (descendants != null && descendants!.total > 0)
+                Tooltip(
+                  message:
+                      'Trong nhánh: ${descendants!.unreviewed} chưa chấm, ${descendants!.pass} đạt, ${descendants!.fail} chưa đạt',
+                  child: _BranchCounts(counts: descendants!),
+                ),
             ],
           ),
         ),
@@ -142,18 +358,47 @@ class _SectionTile extends StatelessWidget {
   }
 }
 
-class _StatusDot extends StatelessWidget {
-  const _StatusDot({required this.status});
+class _BranchCounts extends StatelessWidget {
+  const _BranchCounts({required this.counts});
 
-  final ReviewStatus status;
+  final _Counts counts;
 
   @override
   Widget build(BuildContext context) {
-    final (icon, color) = switch (status) {
-      ReviewStatus.pass => (Icons.check_circle, Colors.green),
-      ReviewStatus.fail => (Icons.cancel, Colors.red),
-      ReviewStatus.unreviewed => (Icons.circle_outlined, Theme.of(context).colorScheme.outline),
-    };
-    return Icon(icon, size: 16, color: color);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _CountChip(count: counts.unreviewed, color: ReviewStatus.unreviewed.color),
+        _CountChip(count: counts.pass, color: ReviewStatus.pass.color),
+        _CountChip(count: counts.fail, color: ReviewStatus.fail.color),
+      ],
+    );
+  }
+}
+
+class _CountChip extends StatelessWidget {
+  const _CountChip({required this.count, required this.color});
+
+  final int count;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(left: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+      decoration: BoxDecoration(
+        color: count == 0 ? Colors.transparent : color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(99),
+      ),
+      child: Text(
+        '$count',
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          color: count == 0 ? color.withValues(alpha: 0.35) : color,
+        ),
+      ),
+    );
   }
 }

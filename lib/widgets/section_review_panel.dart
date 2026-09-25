@@ -1,25 +1,25 @@
 import 'package:flutter/material.dart';
 
 import '../models/document_section.dart';
-import '../models/section_content.dart';
 import '../models/section_review.dart';
+import 'review_status.dart';
 
-/// Shows the selected section's text/images and lets the user set its
-/// pass/fail status and note. Give this widget a `key` derived from the
-/// section id so switching sections gets a fresh [TextEditingController].
+/// Pass/fail controls for the section currently in view. Give this widget a
+/// `key` derived from the section id so switching sections gets a fresh
+/// [TextEditingController].
 class SectionReviewPanel extends StatefulWidget {
   const SectionReviewPanel({
     super.key,
     required this.section,
-    required this.contentFuture,
     required this.review,
     required this.onReviewChanged,
+    this.readOnly = false,
   });
 
   final DocumentSection? section;
-  final Future<SectionContent>? contentFuture;
   final SectionReview review;
   final ValueChanged<SectionReview> onReviewChanged;
+  final bool readOnly;
 
   @override
   State<SectionReviewPanel> createState() => _SectionReviewPanelState();
@@ -40,128 +40,71 @@ class _SectionReviewPanelState extends State<SectionReviewPanel> {
   Widget build(BuildContext context) {
     final section = widget.section;
     if (section == null) {
-      return const Center(child: Text('Chọn một mục ở bên trái để xem nội dung.'));
+      return const Padding(
+        padding: EdgeInsets.all(16),
+        child: Text('Cuộn tới một mục hoặc chọn mục ở bên trái để chấm.'),
+      );
     }
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-          child: Text(section.title, style: Theme.of(context).textTheme.titleLarge),
-        ),
-        Expanded(child: _ContentView(contentFuture: widget.contentFuture)),
-        const Divider(height: 1),
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              SegmentedButton<ReviewStatus>(
-                segments: const [
-                  ButtonSegment(
-                    value: ReviewStatus.unreviewed,
-                    label: Text('Chưa chấm'),
-                    icon: Icon(Icons.circle_outlined),
-                  ),
-                  ButtonSegment(
-                    value: ReviewStatus.pass,
-                    label: Text('Đạt'),
-                    icon: Icon(Icons.check_circle),
-                  ),
-                  ButtonSegment(
-                    value: ReviewStatus.fail,
-                    label: Text('Chưa đạt'),
-                    icon: Icon(Icons.cancel),
-                  ),
-                ],
-                selected: {widget.review.status},
-                onSelectionChanged: (selection) {
-                  widget.onReviewChanged(widget.review.copyWith(status: selection.first));
-                },
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _noteController,
-                decoration: const InputDecoration(
-                  labelText: 'Ghi chú',
-                  border: OutlineInputBorder(),
-                ),
-                minLines: 2,
-                maxLines: 4,
-                onChanged: (value) => widget.onReviewChanged(widget.review.copyWith(note: value)),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _ContentView extends StatelessWidget {
-  const _ContentView({required this.contentFuture});
-
-  final Future<SectionContent>? contentFuture;
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<SectionContent>(
-      future: contentFuture,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState != ConnectionState.done) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (snapshot.hasError) {
-          return Center(child: Text('Không tải được nội dung: ${snapshot.error}'));
-        }
-
-        final content = snapshot.data!;
-        if (content.paragraphs.isEmpty && content.images.isEmpty) {
-          return const Center(
-            child: Text('Mục này không có nội dung riêng (có thể chỉ là tiêu đề nhóm).'),
-          );
-        }
-
-        return ListView(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
+    final status = widget.review.status;
+    return Material(
+      elevation: 6,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            for (final paragraph in content.paragraphs)
-              Padding(padding: const EdgeInsets.only(bottom: 8), child: Text(paragraph)),
-            if (content.images.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                children: [for (final image in content.images) _SectionImageTile(image: image)],
+            Row(
+              children: [
+                Icon(status.icon, size: 18, color: status.color),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Đang chấm: ${section.title}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SegmentedButton<ReviewStatus>(
+              showSelectedIcon: false,
+              segments: [
+                for (final value in ReviewStatus.values)
+                  ButtonSegment(
+                    value: value,
+                    label: Text(value.label),
+                    icon: Icon(value.icon),
+                  ),
+              ],
+              selected: {status},
+              onSelectionChanged: widget.readOnly
+                  ? null
+                  : (selection) {
+                      widget.onReviewChanged(widget.review.copyWith(status: selection.first));
+                    },
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _noteController,
+              readOnly: widget.readOnly,
+              decoration: InputDecoration(
+                labelText: widget.readOnly ? 'Ghi chú của bản này' : 'Thêm ghi chú cho mục này',
+                hintText: widget.readOnly ? null : 'Nội dung hiện ở lề phải, cạnh mục đang chọn',
+                border: const OutlineInputBorder(),
+                isDense: true,
               ),
-            ],
-            const SizedBox(height: 16),
+              minLines: 1,
+              maxLines: 3,
+              onChanged: widget.readOnly
+                  ? null
+                  : (value) => widget.onReviewChanged(widget.review.copyWith(note: value)),
+            ),
           ],
-        );
-      },
-    );
-  }
-}
-
-class _SectionImageTile extends StatelessWidget {
-  const _SectionImageTile({required this.image});
-
-  final SectionImage image;
-
-  @override
-  Widget build(BuildContext context) {
-    final picture = image.bytes != null
-        ? Image.memory(image.bytes!, width: 240, fit: BoxFit.contain)
-        : RawImage(image: image.uiImage, width: 240, fit: BoxFit.contain);
-
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        ClipRRect(borderRadius: BorderRadius.circular(4), child: picture),
-        if (image.caption != null)
-          Text(image.caption!, style: Theme.of(context).textTheme.bodySmall),
-      ],
+        ),
+      ),
     );
   }
 }

@@ -1,13 +1,37 @@
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-/// The text and images belonging directly to one [DocumentSection] (not its
-/// subsections).
+/// The text, tables, and images belonging directly to one [DocumentSection]
+/// (not its subsections), in document order.
 class SectionContent {
-  const SectionContent({required this.paragraphs, required this.images});
+  const SectionContent({this.pieces = const []});
 
-  final List<String> paragraphs;
-  final List<SectionImage> images;
+  final List<ContentPiece> pieces;
+
+  List<String> get paragraphs => [
+    for (final piece in pieces)
+      if (piece.text != null) piece.text!,
+  ];
+
+  List<SectionImage> get images => [
+    for (final piece in pieces)
+      if (piece.image != null) piece.image!,
+  ];
+}
+
+/// One block of section content, in the order it appears in the file.
+class ContentPiece {
+  const ContentPiece.text(this.text) : image = null, table = null;
+
+  const ContentPiece.image(this.image) : text = null, table = null;
+
+  const ContentPiece.table(this.table) : text = null, image = null;
+
+  final String? text;
+  final SectionImage? image;
+
+  /// Rows of cells. The first row is the header.
+  final List<List<String>>? table;
 }
 
 /// Either raw image bytes (DOCX embedded images) or an already-decoded

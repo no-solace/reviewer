@@ -1,31 +1,46 @@
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../models/document_section.dart';
+import '../models/review_version.dart';
 import '../models/section_content.dart';
 import '../models/section_review.dart';
 import '../services/document_structure_service.dart';
 import '../services/review_store.dart';
 import '../services/section_content_loader.dart';
+import '../widgets/document_view.dart';
 import '../widgets/outline_tree.dart';
 import '../widgets/section_review_panel.dart';
+import 'review_history_screen.dart';
 
-/// Main review screen for one document: an outline tree on the left, and
-/// the selected section's content + pass/fail controls on the right.
+/// Main review screen for one saved version: an outline on the left, and a
+/// continuous page on the right with pass/fail controls for the section in view.
 class ReviewScreen extends StatefulWidget {
-  const ReviewScreen({super.key, required this.file});
+  const ReviewScreen({
+    super.key,
+    required this.version,
+    required this.versionNumber,
+    required this.sourcePath,
+    this.readOnly = false,
+    this.store,
+  });
 
-  final PlatformFile file;
+  final ReviewVersion version;
+  final int versionNumber;
+
+  /// File the user picked this session, used when starting another version.
+  final String sourcePath;
+  final bool readOnly;
+  final ReviewStore? store;
 
   @override
   State<ReviewScreen> createState() => _ReviewScreenState();
 }
 
 class _ReviewScreenState extends State<ReviewScreen> {
-  late final String _path = widget.file.path!;
+  late final String _path = widget.version.savedPath;
   late final Future<DocumentOutline> _outlineFuture = DocumentStructureService().analyze(_path);
   late final SectionContentLoader _contentLoader = createSectionContentLoader(_path);
-  final ReviewStore _reviewStore = ReviewStore();
+  late final ReviewStore _reviewStore = widget.store ?? ReviewStore();
   final Map<String, Future<SectionContent>> _contentCache = {};
 
   Map<String, SectionReview> _reviews = {};
@@ -34,7 +49,7 @@ class _ReviewScreenState extends State<ReviewScreen> {
   @override
   void initState() {
     super.initState();
-    _reviewStore.load(_path).then((reviews) {
+    _reviewStore.loadVersion(widget.version).then((reviews) {
       if (!mounted) return;
       setState(() => _reviews = reviews);
     });
@@ -48,12 +63,28 @@ class _ReviewScreenState extends State<ReviewScreen> {
 
   void _selectSection(DocumentSection section) {
     setState(() => _selected = section);
-    _contentCache.putIfAbsent(section.id, () => _contentLoader.load(section));
+  }
+
+  Future<SectionContent> _loadContent(DocumentSection section) {
+    return _contentCache.putIfAbsent(section.id, () => _contentLoader.load(section));
   }
 
   void _updateReview(DocumentSection section, SectionReview review) {
+    if (widget.readOnly) return;
     setState(() => _reviews = {..._reviews, section.id: review});
-    _reviewStore.save(_path, _reviews);
+    _reviewStore.saveVersion(widget.version, _reviews);
+  }
+
+  Future<void> _openHistory() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (context) => ReviewHistoryScreen(
+          fileName: widget.version.fileName,
+          sourcePath: widget.sourcePath,
+          store: _reviewStore,
+        ),
+      ),
+    );
   }
 
   List<DocumentSection> _flatten(List<DocumentSection> sections) {
@@ -70,7 +101,16 @@ class _ReviewScreenState extends State<ReviewScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(widget.file.name)),
+      appBar: AppBar(
+        title: Text('${widget.version.fileName} · Bản ${widget.versionNumber}'),
+        actions: [
+          IconButton(
+            tooltip: 'Các bản review',
+            onPressed: _openHistory,
+            icon: const Icon(Icons.history),
+          ),
+        ],
+      ),
       body: FutureBuilder<DocumentOutline>(
         future: _outlineFuture,
         builder: (context, snapshot) {
@@ -89,36 +129,24 @@ class _ReviewScreenState extends State<ReviewScreen> {
           }
 
           final flat = _flatten(outline.sections);
-          final reviewedCount = flat
-              .where((s) => (_reviews[s.id]?.status ?? ReviewStatus.unreviewed) != ReviewStatus.unreviewed)
-              .length;
           final selected = _selected;
 
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (outline.warning != null) _WarningBanner(message: outline.warning!),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: LinearProgressIndicator(
-                        value: flat.isEmpty ? 0 : reviewedCount / flat.length,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Text('$reviewedCount/${flat.length} mục đã chấm'),
-                  ],
+              if (widget.readOnly)
+                const _WarningBanner(
+                  info: true,
+                  message:
+                      'Đang xem bản review cũ. Ghi chú và đánh giá được giữ nguyên để đối chiếu khi sửa tài liệu.',
                 ),
-              ),
-              const Divider(height: 1),
+              if (outline.warning != null) _WarningBanner(message: outline.warning!),
               Expanded(
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     SizedBox(
-                      width: 320,
+                      width: 380,
                       child: OutlineTree(
                         sections: outline.sections,
                         selectedId: selected?.id,
@@ -128,16 +156,29 @@ class _ReviewScreenState extends State<ReviewScreen> {
                     ),
                     const VerticalDivider(width: 1),
                     Expanded(
-                      child: SectionReviewPanel(
-                        key: ValueKey(selected?.id),
-                        section: selected,
-                        contentFuture: selected == null ? null : _contentCache[selected.id],
-                        review: selected == null
-                            ? const SectionReview()
-                            : (_reviews[selected.id] ?? const SectionReview()),
-                        onReviewChanged: selected == null
-                            ? (_) {}
-                            : (review) => _updateReview(selected, review),
+                      child: Column(
+                        children: [
+                          Expanded(
+                            child: DocumentView(
+                              sections: flat,
+                              selectedId: selected?.id,
+                              reviews: _reviews,
+                              loadContent: _loadContent,
+                              onSectionFocused: _selectSection,
+                            ),
+                          ),
+                          SectionReviewPanel(
+                            key: ValueKey(selected?.id),
+                            section: selected,
+                            readOnly: widget.readOnly,
+                            review: selected == null
+                                ? const SectionReview()
+                                : (_reviews[selected.id] ?? const SectionReview()),
+                            onReviewChanged: selected == null || widget.readOnly
+                                ? (_) {}
+                                : (review) => _updateReview(selected, review),
+                          ),
+                        ],
                       ),
                     ),
                   ],
@@ -152,23 +193,26 @@ class _ReviewScreenState extends State<ReviewScreen> {
 }
 
 class _WarningBanner extends StatelessWidget {
-  const _WarningBanner({required this.message});
+  const _WarningBanner({required this.message, this.info = false});
 
   final String message;
+  final bool info;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final background = info ? const Color(0xFFFFF8E1) : colorScheme.errorContainer;
+    final foreground = info ? const Color(0xFF5D4037) : colorScheme.onErrorContainer;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(12),
-      color: colorScheme.errorContainer,
+      color: background,
       child: Row(
         children: [
-          Icon(Icons.info_outline, color: colorScheme.onErrorContainer, size: 20),
+          Icon(Icons.info_outline, color: foreground, size: 20),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(message, style: TextStyle(color: colorScheme.onErrorContainer)),
+            child: Text(message, style: TextStyle(color: foreground)),
           ),
         ],
       ),

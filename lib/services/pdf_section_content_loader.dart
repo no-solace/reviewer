@@ -14,10 +14,16 @@ class PdfSectionContentLoader implements SectionContentLoader {
   PdfSectionContentLoader(this.filePath);
 
   final String filePath;
+  Future<PdfDocument>? _opening;
   PdfDocument? _document;
 
-  Future<PdfDocument> _ensureOpen() async {
-    return _document ??= await PdfDocument.openFile(filePath);
+  Future<PdfDocument> _ensureOpen() {
+    final existing = _document;
+    if (existing != null) return Future.value(existing);
+    return _opening ??= PdfDocument.openFile(filePath).then((document) {
+      _document = document;
+      return document;
+    });
   }
 
   @override
@@ -26,29 +32,26 @@ class PdfSectionContentLoader implements SectionContentLoader {
 
     final start = section.pageNumber;
     final end = section.contentEndPageNumber;
-    if (start == null || end == null) {
-      return const SectionContent(paragraphs: [], images: []);
-    }
+    if (start == null || end == null) return const SectionContent();
 
-    final texts = <String>[];
-    final images = <SectionImage>[];
+    final pieces = <ContentPiece>[];
 
     for (var pageNumber = start; pageNumber < end && pageNumber <= document.pages.length; pageNumber++) {
       final page = document.pages[pageNumber - 1];
 
       final rawText = await page.loadText();
       final text = rawText?.fullText.trim() ?? '';
-      if (text.isNotEmpty) texts.add(text);
+      if (text.isNotEmpty) pieces.add(ContentPiece.text(text));
 
       final rendered = await page.render();
       if (rendered != null) {
         final uiImage = await rendered.createImage();
         rendered.dispose();
-        images.add(SectionImage.rendered(uiImage, caption: 'Trang $pageNumber'));
+        pieces.add(ContentPiece.image(SectionImage.rendered(uiImage, caption: 'Trang $pageNumber')));
       }
     }
 
-    return SectionContent(paragraphs: texts, images: images);
+    return SectionContent(pieces: pieces);
   }
 
   @override
